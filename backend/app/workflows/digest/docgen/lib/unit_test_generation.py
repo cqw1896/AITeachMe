@@ -13,12 +13,16 @@ from app.workflows.digest.docgen.lib.model_policy import (
     DocGenModelStep,
     docgen_completion_kwargs_with_metadata,
 )
+from app.workflows.digest.docgen.lib.models import clean_chapter_end_practice_plan
 from app.workflows.digest.docgen.lib.unit_tests import (
     ChapterUnitTestGenerationError,
+    ChapterUnitTestItem,
     ChapterUnitTestSet,
+    _prepare_unit_test_items,
     append_unit_test_markdown,
     render_unit_test_markdown,
     unit_test_structure_issues,
+    unit_test_type_quota_issues,
 )
 from app.workflows.digest.docgen.prompts.chapter_unit_tests import (
     build_chapter_unit_test_messages,
@@ -26,6 +30,12 @@ from app.workflows.digest.docgen.prompts.chapter_unit_tests import (
 )
 
 logger = structlog.get_logger(__name__)
+
+
+def _unit_test_type_quota_issues(
+    items: Sequence[ChapterUnitTestItem], practice_plan: Sequence[Mapping[str, object]],
+) -> list[str]:
+    return unit_test_type_quota_issues((item.type for item in items), practice_plan)
 
 
 async def generate_chapter_unit_test_markdown(
@@ -53,7 +63,10 @@ async def generate_chapter_unit_test_markdown(
     safe_min = max(1, min(int(min_items or 1), 12))
     safe_max = max(safe_min, min(int(max_items or safe_min), 12))
     required = [str(item) for item in required_elements if str(item).strip()]
-    practice_plan = [dict(item) for item in chapter_end_practice_plan]
+    try:
+        practice_plan = clean_chapter_end_practice_plan([dict(item) for item in chapter_end_practice_plan])
+    except ValueError as exc:
+        raise ChapterUnitTestGenerationError(f"Invalid chapter-end question type quota: {exc}") from exc
     messages = build_chapter_unit_test_messages(
         chapter_title=chapter_title,
         digest_mode=digest_mode,
@@ -85,6 +98,12 @@ async def generate_chapter_unit_test_markdown(
             fallback_targets=required,
         )
         issues = unit_test_structure_issues(append_unit_test_markdown(body_markdown, candidate_markdown))
+        issues.extend(_unit_test_type_quota_issues(
+            _prepare_unit_test_items(
+                list(candidate.items), title=chapter_title, min_items=safe_min,
+                max_items=safe_max, fallback_targets=required,
+            ), practice_plan,
+        ))
         if issues:
             generation_issue = "；".join(issues)
     except asyncio.CancelledError:
@@ -137,6 +156,12 @@ async def generate_chapter_unit_test_markdown(
             )
             published = append_unit_test_markdown(body_markdown, unit_test_markdown)
             issues = unit_test_structure_issues(published)
+            issues.extend(_unit_test_type_quota_issues(
+                _prepare_unit_test_items(
+                    list(reviewed.items), title=chapter_title, min_items=safe_min,
+                    max_items=safe_max, fallback_targets=required,
+                ), practice_plan,
+            ))
             if not issues:
                 return published
             review_issue = "；".join(issues)
