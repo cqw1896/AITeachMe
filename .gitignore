@@ -86,3 +86,23 @@ tmp/
 /.playwright-cli/
 /output/playwright/
 /output/git-sync-*
+
+# Local MinerU backups and development files
+backend/app/workflows/ingest/parsing/backups/
+
+# Local scripts and database setup files
+download_models.bat
+parse_pdf.bat
+grant_permissions.sql
+reset_password.sql
+setup_database.sql
+
+# Local test and temporary markdown files
+output.md
+test.md
+
+# Local deployment documentation (keep in C:\AITeachMe\ directory instead)
+安装pgvector指南.md
+部署完成说明.md
+部署配置指南.md
+语文七年级下册.pdf
