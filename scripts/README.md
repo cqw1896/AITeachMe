@@ -13,3 +13,49 @@
 - 后端业务脚本放 `backend/scripts/`。
 - 部署资产放 `infra/deployment/`。
 - 桌面端打包放 `packaging/`。
+
+
+
+# MinerU Integration Scripts
+
+## 脚本说明
+
+| 脚本              | 用途                                 |
+| ----------------- | ------------------------------------ |
+| verify-mineru.ps1 | 验证 MinerU 集成完整性               |
+| sync-upstream.ps1 | 同步上游更新并保留 MinerU            |
+| git-cleanup.ps1   | 清理 Git 仓库（解决 pack file 错误） |
+
+## 使用方法
+
+### 验证集成
+``````powershell
+cd scripts
+.\verify-mineru.ps1
+同步上游
+cd scripts
+.\sync-upstream.ps1
+清理仓库
+cd scripts
+.\git-cleanup.ps1
+要求
+PowerShell 5.1+
+Git 2.+
+执行策略：``Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+新机器使用
+# Clone 仓库后
+cd AITeachMe\scripts
+.\verify-mineru.ps1
+"@ | Out-File -FilePath scripts\README.md -Encoding UTF8
+
+添加到 Git
+git add scripts/
+git commit -m "chore: Add MinerU integration maintenance scripts
+
+Add verify-mineru.ps1: Verify integration completeness
+Add sync-upstream.ps1: Sync upstream while preserving MinerU
+Add git-cleanup.ps1: Clean Git repository and resolve pack file issues
+Add README.md: Usage instructions"
+推送
+git push origin main
+``````
