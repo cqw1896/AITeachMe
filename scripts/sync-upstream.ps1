@@ -7,15 +7,46 @@ Write-Host "Preserve MinerU Integration" -ForegroundColor Cyan
 Write-Host "====================================" -ForegroundColor Cyan
 Write-Host ""
 
-$repoPath = "C:\AITeachMe\AITeachMe"
+# Auto-detect repository path
+$repoPath = $null
 
-# Check directory
+# Option 1: Script in repo root
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (Test-Path "$scriptDir\.git") {
+    $repoPath = $scriptDir
+}
+
+# Option 2: Script in AITeachMe folder, repo in subfolder
+if (-not $repoPath -and (Test-Path "$scriptDir\AITeachMe\.git")) {
+    $repoPath = "$scriptDir\AITeachMe"
+}
+
+# Option 3: Check current directory
+if (-not $repoPath -and (Test-Path ".\.git")) {
+    $repoPath = Get-Location
+}
+
+# Option 4: Fallback to hardcoded path
+if (-not $repoPath) {
+    $repoPath = "C:\AITeachMe\AITeachMe"
+}
+
+# Validate final path
 if (-not (Test-Path $repoPath)) {
-    Write-Host "[ERROR] Directory not found: $repoPath" -ForegroundColor Red
+    Write-Host "[ERROR] Repository not found at: $repoPath" -ForegroundColor Red
+    Write-Host "[INFO] Please run this script from the repository directory" -ForegroundColor Yellow
+    Write-Host "[INFO] Or place it in C:\AITeachMe\" -ForegroundColor Yellow
     Read-Host "Press Enter to exit"
     exit 1
 }
 
+if (-not (Test-Path "$repoPath\.git")) {
+    Write-Host "[ERROR] Not a Git repository: $repoPath" -ForegroundColor Red
+    Read-Host "Press Enter to exit"
+    exit 1
+}
+
+Write-Host "[INFO] Using repository: $repoPath" -ForegroundColor Gray
 Set-Location $repoPath
 
 # [1/8] Check remote configuration

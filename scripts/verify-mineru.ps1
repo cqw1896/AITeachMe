@@ -6,13 +6,44 @@ Write-Host "Verify MinerU Integration Status" -ForegroundColor Cyan
 Write-Host "====================================" -ForegroundColor Cyan
 Write-Host ""
 
-$repoPath = "C:\AITeachMe\AITeachMe"
+# Auto-detect project root
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoPath = $null
+
+# Strategy 1: Script in project root or scripts/ subdirectory
+if (Test-Path (Join-Path $scriptDir "backend")) {
+    $repoPath = $scriptDir
+} elseif (Test-Path (Join-Path (Split-Path -Parent $scriptDir) "backend")) {
+    $repoPath = Split-Path -Parent $scriptDir
+}
+
+# Strategy 2: Search upward from current directory
+if (-not $repoPath) {
+    $currentDir = Get-Location
+    while ($currentDir.Path -ne $currentDir.Root) {
+        if (Test-Path (Join-Path $currentDir.Path "backend\app\workflows\ingest\parsing\parsers.py")) {
+            $repoPath = $currentDir.Path
+            break
+        }
+        $currentDir = Split-Path -Parent $currentDir.Path
+    }
+}
+
+# Strategy 3: Prompt user
+if (-not $repoPath) {
+    Write-Host "[WARN] Cannot auto-detect project path" -ForegroundColor Yellow
+    Write-Host "Please enter the full path to AITeachMe project root:" -ForegroundColor Cyan
+    $repoPath = Read-Host "Project path"
+}
 
 if (-not (Test-Path $repoPath)) {
     Write-Host "[ERROR] Directory not found: $repoPath" -ForegroundColor Red
     Read-Host "Press Enter to exit"
     exit 1
 }
+
+Write-Host "[INFO] Using project path: $repoPath" -ForegroundColor Cyan
+Write-Host ""
 
 Set-Location $repoPath
 
