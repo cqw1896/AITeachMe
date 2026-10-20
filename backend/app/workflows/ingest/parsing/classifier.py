@@ -75,18 +75,52 @@ def classify_file(file_path: str | Path, filetype: str) -> ClassificationResult:
 
 
 def _classify_pdf(path: Path) -> ClassificationResult:
-    result = ClassificationResult(
-        file_category="pdf",
-        recommended_parser="markitdown",
-        fallback_parsers=[],
-    )
+    # Check if MinerU is available
+    mineru_available = _check_mineru_available()
+    
+    if mineru_available:
+        # Use MinerU for high-quality PDF parsing
+        result = ClassificationResult(
+            file_category="pdf",
+            recommended_parser="mineru",
+            fallback_parsers=["markitdown"],
+        )
+    else:
+        # Fallback to MarkItDown
+        result = ClassificationResult(
+            file_category="pdf",
+            recommended_parser="markitdown",
+            fallback_parsers=[],
+        )
+    
     logger.info(
         "classify_pdf_done",
         filename=path.name,
         category=result.file_category,
         parser=result.recommended_parser,
+        mineru_available=mineru_available,
     )
     return result
+
+
+def _check_mineru_available() -> bool:
+    """Check if MinerU is installed and models are available."""
+    import os
+    
+    # Check if MinerU package is installed
+    try:
+        import mineru  # noqa: F401
+    except ImportError:
+        return False
+    
+    # Check if models directory exists
+    models_dir = Path.home() / ".mineru" / "models"
+    if not models_dir.exists():
+        return False
+    
+    # Check if at least one model directory exists
+    model_subdirs = list(models_dir.glob("MinerU-*"))
+    return len(model_subdirs) > 0
 
 
 def _classify_docx(path: Path) -> ClassificationResult:

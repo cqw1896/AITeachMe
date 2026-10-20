@@ -128,6 +128,9 @@ def _preferred_parser_order(
         return ["text_native"]
 
     if extension == ".pdf":
+        # Check if classification recommends mineru
+        if classification and classification.recommended_parser == "mineru":
+            return ["mineru", "markitdown"]
         return ["markitdown"]
 
     if extension == ".docx":
@@ -187,6 +190,12 @@ def _decide_mode_and_options(
         options.skip_image_supplement = True
         options.enable_asset_vision_ocr = False
         options.enable_page_vision_ocr = False
+        # Check if MinerU is available and recommended
+        if classification and classification.recommended_parser == "mineru":
+            # MinerU needs much longer timeout for large PDFs
+            # 1 hour for very large documents (100+ pages)
+            options.timeout_s = max(options.timeout_s, 3600)
+            return "local_mineru", "PDF parsed with MinerU for high-quality extraction; MarkItDown as fallback."
         return "local_markitdown", "PDF local fallback is handled by MarkItDown; OCR/layout PDFs should use PaddleOCR or MinerU."
 
     if extension == ".docx":

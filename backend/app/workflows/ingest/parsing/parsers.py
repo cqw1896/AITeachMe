@@ -48,10 +48,20 @@ _PDF_PARSER_IMPORTS: dict[str, tuple[str, str]] = {
         "app.workflows.ingest.parsing.pdf_markitdown",
         "parse_pdf_with_markitdown",
     ),
+    "mineru_cloud": (
+        "app.workflows.ingest.parsing.pdf_mineru_cloud",
+        "parse_pdf_with_mineru_cloud_wrapper",
+    ),
+    "mineru": (
+        "app.workflows.ingest.parsing.pdf_mineru_local",
+        "parse_pdf_with_mineru_local",
+    ),
 }
 
 _PDF_PARSER_PACKAGE_SPECS: dict[str, tuple[str, ...]] = {
     "markitdown": ("markitdown", "pdfplumber"),
+    "mineru_cloud": ("requests",),  # 云端只需要 requests
+    "mineru": ("mineru",),
 }
 
 
@@ -89,12 +99,30 @@ async def parse_pdf_with_markitdown(
     return await _parse_pdf_with("markitdown", file_path, asset_dir, options)
 
 
+async def parse_pdf_with_mineru_cloud(
+    file_path: str | Path,
+    asset_dir: Path,
+    options: ParserRunOptions,
+) -> str:
+    return await _parse_pdf_with("mineru_cloud", file_path, asset_dir, options)
+
+
+async def parse_pdf_with_mineru(
+    file_path: str | Path,
+    asset_dir: Path,
+    options: ParserRunOptions,
+) -> str:
+    return await _parse_pdf_with("mineru", file_path, asset_dir, options)
+
+
 def _build_pdf_parser_mapping() -> dict[str, dict[str, Parser]]:
     if not builtin_pdf_parsing_enabled():
         return {}
     return {
         ".pdf": {
             "markitdown": parse_pdf_with_markitdown,
+            "mineru_cloud": parse_pdf_with_mineru_cloud,
+            "mineru": parse_pdf_with_mineru,
         }
     }
 
@@ -103,7 +131,7 @@ def _build_pdf_parser_chain() -> dict[str, list[str]]:
     if not builtin_pdf_parsing_enabled():
         return {}
     return {
-        ".pdf": ["markitdown"],
+        ".pdf": ["mineru_cloud", "mineru", "markitdown"],
     }
 
 
@@ -113,6 +141,8 @@ def _build_pdf_parser_availability() -> dict[str, dict[str, bool]]:
     return {
         ".pdf": {
             "markitdown": _pdf_parser_available("markitdown"),
+            "mineru_cloud": _pdf_parser_available("mineru_cloud"),
+            "mineru": _pdf_parser_available("mineru"),
         }
     }
 
