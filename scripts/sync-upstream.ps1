@@ -74,11 +74,47 @@ Write-Host ""
 
 # [3/8] Fetch upstream updates
 Write-Host "[3/8] Fetching upstream updates..." -ForegroundColor Yellow
-git fetch upstream
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "[OK] Fetch successful" -ForegroundColor Green
-} else {
-    Write-Host "[FAIL] Fetch failed, please check network" -ForegroundColor Red
+
+# Retry logic with proxy configuration
+$fetchAttempts = 0
+$maxFetchAttempts = 3
+$fetchSuccess = $false
+
+while (-not $fetchSuccess -and $fetchAttempts -lt $maxFetchAttempts) {
+    $fetchAttempts++
+    Write-Host "[RETRY $fetchAttempts/$maxFetchAttempts] Attempting to fetch upstream..." -ForegroundColor Cyan
+    
+    git fetch upstream 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        $fetchSuccess = $true
+        Write-Host "[OK] Fetch successful" -ForegroundColor Green
+    } else {
+        if ($fetchAttempts -lt $maxFetchAttempts) {
+            Write-Host "[WARN] Fetch failed, retrying in 2 seconds..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
+if (-not $fetchSuccess) {
+    Write-Host "[FAIL] Fetch failed after $maxFetchAttempts attempts" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Possible solutions:" -ForegroundColor Yellow
+    Write-Host "  1. Check proxy status:" -ForegroundColor Cyan
+    Write-Host "     - Verify 127.0.0.1:7890 is running" -ForegroundColor Gray
+    Write-Host "     - Test: curl -x http://127.0.0.1:7890 https://github.com" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  2. Configure Git proxy:" -ForegroundColor Cyan
+    Write-Host "     git config --global http.proxy http://127.0.0.1:7890" -ForegroundColor Gray
+    Write-Host "     git config --global https.proxy http://127.0.0.1:7890" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  3. Or try without proxy:" -ForegroundColor Cyan
+    Write-Host "     git config --global --unset http.proxy" -ForegroundColor Gray
+    Write-Host "     git config --global --unset https.proxy" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  4. Check current Git proxy config:" -ForegroundColor Cyan
+    Write-Host "     git config --global --get http.proxy" -ForegroundColor Gray
+    Write-Host ""
     Read-Host "Press Enter to exit"
     exit 1
 }
