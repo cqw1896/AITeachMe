@@ -1,29 +1,30 @@
 Option Explicit
 
-Dim objShell, objWMI, colProcesses, objProcess
+Dim objShell
 Set objShell = CreateObject("WScript.Shell")
-Set objWMI = GetObject("winmgmts:\.\root\cimv2")
 
 Dim intCount
 intCount = 0
 
-Set colProcesses = objWMI.ExecQuery("SELECT * FROM Win32_Process WHERE CommandLine LIKE '%uvicorn%app.main:app%'")
-For Each objProcess In colProcesses
-    objProcess.Terminate()
-    intCount = intCount + 1
-Next
+On Error Resume Next
 
-Set colProcesses = objWMI.ExecQuery("SELECT * FROM Win32_Process WHERE Name='node.exe' AND CommandLine LIKE '%npm%dev%'")
-For Each objProcess In colProcesses
-    objProcess.Terminate()
+objShell.Run "taskkill /F /IM uvicorn.exe", 0, True
+If Err.Number = 0 Then
     intCount = intCount + 1
-Next
+End If
+Err.Clear
+
+objShell.Run "taskkill /F /FI ""WINDOWTITLE eq npm*""", 0, True
+If Err.Number = 0 Then
+    intCount = intCount + 1
+End If
+Err.Clear
+
+objShell.Run "taskkill /F /FI ""IMAGENAME eq node.exe"" /FI ""COMMANDLINE eq *vite*""", 0, True
+If Err.Number = 0 Then
+    intCount = intCount + 1
+End If
 
 Set objShell = Nothing
-Set objWMI = Nothing
 
-If intCount > 0 Then
-    MsgBox "Stopped " & intCount & " AITeachMe processes", vbInformation
-Else
-    MsgBox "No running AITeachMe processes found", vbInformation
-End If
+MsgBox "AITeachMe processes stopped", vbInformation, "AITeachMe Stopper"
