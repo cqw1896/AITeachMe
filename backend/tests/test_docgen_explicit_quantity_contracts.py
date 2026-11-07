@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from importlib import import_module
+
 import pytest
 from markdown_it import MarkdownIt
 
 from app.shared.infra.execution import TracedExecutionContext
 from app.shared.infra.workflow.context import WorkflowContext
-from app.workflows.digest.docgen.graph import route_after_step
+from app.utils.time import utcnow
+from app.workflows.digest.docgen.graph import build_chapter_brief_sends, route_after_step
 from app.workflows.digest.docgen.lib import chapter_execution_brief, chapter_planning, quality, repair
 from app.workflows.digest.docgen.lib.chapter_context import DocGenChapterContextRuntime
 from app.workflows.digest.docgen.lib.models import (
@@ -32,16 +35,21 @@ from app.workflows.digest.docgen.lib.unit_test_generation import generate_chapte
 from app.workflows.digest.docgen.lib.unit_tests import (
     ChapterUnitTestItem, ChapterUnitTestSet, append_unit_test_markdown, render_unit_test_markdown,
 )
-from app.workflows.digest.docgen.lib.writer import (
-    DocGenWriterNoContentError,
-    DocGenWriterRuntime,
-    _explicit_writer_contract_issues,
-)
-from app.workflows.digest.docgen.nodes.generate_chapters import _chapter_plan_for_writer
-from app.workflows.digest.docgen.nodes import assemble_chapter_tasks, merge_review
+from app.workflows.digest.docgen.lib.writer import _explicit_writer_contract_issues
+from app.workflows.digest.docgen.nodes import assemble_chapter_tasks, build_chapter_execution_briefs, merge_review
 from app.workflows.digest.docgen.prompts.chapter_review import build_chapter_review_messages
 from app.workflows.digest.docgen.prompts.document_review import build_document_review_messages
 from app.workflows.digest.docgen.prompts.generation import build_docgen_writer_messages
+
+
+@pytest.fixture(params=["docgen", "docgen_multimodal"])
+def chapter_plan_for_writer(request):
+    return import_module(f"app.workflows.digest.{request.param}.nodes.generate_chapters")._chapter_plan_for_writer
+
+
+@pytest.fixture(params=["docgen", "docgen_multimodal"])
+def writer_module(request):
+    return import_module(f"app.workflows.digest.{request.param}.lib.writer")
 
 
 TITLE = "Python列表索引与切片"
@@ -172,6 +180,50 @@ def test_quantity_parser_does_not_merge_comma_separated_chapters() -> None:
     assert [item.total for item in contracts] == [4, 5]
 
 
+@pytest.mark.parametrize("text", ["章末保留两个题组", "章末共两个题组", "章末覆盖三种题型"])
+def test_question_groups_and_types_are_not_question_counts(text: str) -> None:
+    assert infer_explicit_chapter_end_question_contracts([text]) == []
+
+
+@pytest.mark.anyio
+async def test_multi_chapter_brief_does_not_inherit_another_chapters_unscoped_count(monkeypatch) -> None:
+    async def fake_brief(_messages, **kwargs):
+        return kwargs["response_model"](
+            teaching_outline=["复习二元一次方程组"],
+            quantity_constraints={"chapter_end_question_count": 13},
+            content_role_targets={"concept": ["二元一次方程组"]},
+            example_coverage_plan=[{"target": "代入消元法"}],
+            chapter_end_practice_plan=[
+                {"target": "应用迁移", "question_count": 3},
+                {"target": "填空检查", "question_count": 10},
+            ],
+        )
+
+    monkeypatch.setattr(chapter_execution_brief, "acompletion_with_fallback", fake_brief)
+    async def ignore_progress(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(build_chapter_execution_briefs, "publish_docgen_progress", ignore_progress)
+    monkeypatch.setattr(build_chapter_execution_briefs, "append_knowledge_build_recent_event", lambda *a, **k: None)
+    sends = build_chapter_brief_sends({
+        "course_id": "scoped-quantities", "requested_at": utcnow(),
+        "docgen_context": DocGenContext(
+            course_name="方程复习", digest_mode="sprint",
+            plan="第一章章末14道应用练习和6道短测，共20题；第二章同样保留3道应用练习和10道短测，共13题。",
+        ).model_dump(mode="json"),
+        "chapter_task_seeds": [
+            ChapterGenerationTaskSeed(chapter_index=i, confirmed_title=title).model_dump(mode="json")
+            for i, title in [(1, "一元一次方程"), (2, "二元一次方程组")]
+        ],
+    })
+    context = WorkflowContext(workflow_name="digest.docgen", course_id="scoped-quantities")
+    result = await build_chapter_execution_briefs.build_chapter_execution_briefs_node(context=context)(sends[1].arg)
+    assert not result.get("chapter_execution_brief_errors")
+    brief = ChapterExecutionBrief.model_validate(result["chapter_execution_brief_items"][0])
+    assert brief.quantity_constraints.chapter_end_question_count == 13
+    assert [group["question_count"] for group in brief.chapter_end_practice_plan] == [3, 10]
+
+
 def test_quantity_checker_accepts_total_plan_when_subset_is_not_a_separate_group() -> None:
     assert chapter_end_question_contract_issues(
         quantity_constraints=ChapterQuantityConstraints(chapter_end_question_count=5),
@@ -198,7 +250,7 @@ def _compile_brief(brief: ChapterExecutionBrief, *, build_constraints: dict | No
 
 
 @pytest.mark.anyio
-async def test_no_retrieval_brief_preserves_user_contract_through_writer_and_quiz(monkeypatch) -> None:
+async def test_no_retrieval_brief_preserves_user_contract_through_writer_and_quiz(monkeypatch, chapter_plan_for_writer) -> None:
     async def fake_brief(*_args, **kwargs):
         return kwargs["response_model"](
             teaching_outline=["索引取值", "基本切片"],
@@ -227,7 +279,7 @@ async def test_no_retrieval_brief_preserves_user_contract_through_writer_and_qui
     assert task.retrieval_queries == []
     assert task.teaching_outline == ["索引取值", "基本切片"]
     assert (task.min_word_count, task.target_word_count, task.max_word_count) == (1200, 1400, 1600)
-    writer_plan = _chapter_plan_for_writer(task, total_chapters=1)
+    writer_plan = chapter_plan_for_writer(task, total_chapters=1)
     contract = writer_plan["execution_contract"]
     assert contract["practice_quota"]["worked_examples"] == 2
     assert contract["practice_quota"]["practice_tasks"] == 0
@@ -279,32 +331,32 @@ async def test_no_retrieval_brief_preserves_user_contract_through_writer_and_qui
     assert "仅2小节、2示例、2练习，1200–1600字，不联网。" in chapter_review_prompt
 
 
-def test_unspecified_quantities_keep_mode_defaults() -> None:
+def test_unspecified_quantities_keep_mode_defaults(chapter_plan_for_writer) -> None:
     task = _compile_brief(ChapterExecutionBrief(chapter_index=1))
-    contract = _chapter_plan_for_writer(task, total_chapters=1)["execution_contract"]
+    contract = chapter_plan_for_writer(task, total_chapters=1)["execution_contract"]
     assert contract["quantity_constraints"] == {}
     assert contract["practice_quota"]["chapter_end_min_tasks"] == 3
     assert contract["practice_quota"]["chapter_end_max_tasks"] == 4
     assert contract["practice_quota"]["worked_examples"] >= 4
 
 
-def test_explicit_question_count_above_default_keeps_entire_practice_plan() -> None:
+def test_explicit_question_count_above_default_keeps_entire_practice_plan(chapter_plan_for_writer) -> None:
     task = _compile_brief(ChapterExecutionBrief(
         quantity_constraints={"chapter_end_question_count": 6},
         chapter_end_practice_plan=[{"target": f"索引边界{i}"} for i in range(6)],
     ))
     assert len(task.chapter_end_practice_plan) == 6
-    contract = _chapter_plan_for_writer(task, total_chapters=1)["execution_contract"]
+    contract = chapter_plan_for_writer(task, total_chapters=1)["execution_contract"]
     assert contract["practice_quota"]["chapter_end_min_tasks"] == 6
     assert contract["practice_quota"]["chapter_end_max_tasks"] == 6
 
 
-def test_explicit_zero_examples_and_small_word_cap_override_density_and_budget() -> None:
+def test_explicit_zero_examples_and_small_word_cap_override_density_and_budget(chapter_plan_for_writer) -> None:
     task = _compile_brief(ChapterExecutionBrief(quantity_constraints={
         "worked_example_count": 0, "max_word_count": 400,
     }))
     assert task.min_word_count <= task.target_word_count <= task.max_word_count == 400
-    contract = _chapter_plan_for_writer(task, total_chapters=1)["execution_contract"]
+    contract = chapter_plan_for_writer(task, total_chapters=1)["execution_contract"]
     assert contract["practice_quota"]["worked_examples"] == 0
     prompt = build_docgen_writer_messages(
         title=TITLE, objective="", digest_mode="sprint", required_elements=[], writing_instructions="",
@@ -376,11 +428,11 @@ def test_document_budget_supports_different_explicit_chapter_lengths(chapter_ran
             assert task.max_word_count <= requested["max_word_count"]
 
 
-def test_separate_inline_and_chapter_end_practice_quotas_remain_separate() -> None:
+def test_separate_inline_and_chapter_end_practice_quotas_remain_separate(chapter_plan_for_writer) -> None:
     task = _compile_brief(ChapterExecutionBrief(quantity_constraints={
         "inline_practice_count": 3, "chapter_end_question_count": 2,
     }))
-    contract = _chapter_plan_for_writer(task, total_chapters=1)["execution_contract"]
+    contract = chapter_plan_for_writer(task, total_chapters=1)["execution_contract"]
     assert contract["practice_quota"]["practice_tasks"] == 3
     assert contract["practice_quota"]["chapter_end_min_tasks"] == 2
     assert contract["practice_quota"]["chapter_end_max_tasks"] == 2
@@ -392,9 +444,9 @@ def test_separate_inline_and_chapter_end_practice_quotas_remain_separate() -> No
     assert "章末测试恰好 2 道题" in prompt
 
 
-def test_only_chapter_end_count_does_not_disable_unspecified_inline_practice() -> None:
+def test_only_chapter_end_count_does_not_disable_unspecified_inline_practice(chapter_plan_for_writer) -> None:
     task = _compile_brief(ChapterExecutionBrief(quantity_constraints={"chapter_end_question_count": 2}))
-    contract = _chapter_plan_for_writer(task, total_chapters=1)["execution_contract"]
+    contract = chapter_plan_for_writer(task, total_chapters=1)["execution_contract"]
     assert contract["practice_quota"]["chapter_end_min_tasks"] == 2
     assert contract["practice_quota"]["practice_tasks"] > 0
     prompt = build_docgen_writer_messages(
@@ -414,7 +466,7 @@ async def test_explicit_empty_retrieval_queries_do_not_trigger_title_search() ->
 
 
 @pytest.mark.anyio
-async def test_writer_preserves_repeated_code_and_output_lines() -> None:
+async def test_writer_preserves_repeated_code_and_output_lines(writer_module) -> None:
     async def fake_llm(*_args, **_kwargs):
         return (
             f"# {TITLE}\n\n## 取值\n\n"
@@ -423,7 +475,7 @@ async def test_writer_preserves_repeated_code_and_output_lines() -> None:
             "输出：\n\n```text\n绿\n绿\n蓝\n```\n"
         )
 
-    runtime = DocGenWriterRuntime(TracedExecutionContext(course_id="course_repeated_output", llm_caller=fake_llm))
+    runtime = writer_module.DocGenWriterRuntime(TracedExecutionContext(course_id="course_repeated_output", llm_caller=fake_llm))
     result = await runtime.execute(chapter_plan={"title": TITLE}, dense_context="", digest_mode="sprint")
     assert "print(colors[-1])\nprint(colors[-1])" in result.content
     assert "绿\n绿\n蓝" in result.content
@@ -431,7 +483,7 @@ async def test_writer_preserves_repeated_code_and_output_lines() -> None:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("repair_succeeds", [True, False])
-async def test_writer_retries_section_contract_once_and_rejects_remaining_violation(repair_succeeds) -> None:
+async def test_writer_retries_section_contract_once_and_rejects_remaining_violation(repair_succeeds, writer_module) -> None:
     calls = []
 
     async def fake_llm(messages, **_kwargs):
@@ -441,7 +493,7 @@ async def test_writer_retries_section_contract_once_and_rejects_remaining_violat
             body += "\n## 额外总结\n重复正文\n"
         return body
 
-    runtime = DocGenWriterRuntime(TracedExecutionContext(course_id="course_explicit_sections", llm_caller=fake_llm))
+    runtime = writer_module.DocGenWriterRuntime(TracedExecutionContext(course_id="course_explicit_sections", llm_caller=fake_llm))
     kwargs = dict(
         chapter_plan={"title": TITLE, "execution_contract": {"quantity_constraints": {"body_section_count": 2}}},
         dense_context="", digest_mode="sprint",
@@ -452,7 +504,7 @@ async def test_writer_retries_section_contract_once_and_rejects_remaining_violat
         assert len(headings) == 2
         assert result.metadata["writer_contract_repair_attempted"] is True
     else:
-        with pytest.raises(DocGenWriterNoContentError, match="still violates explicit contract"):
+        with pytest.raises(writer_module.DocGenWriterNoContentError, match="still violates explicit contract"):
             await runtime.execute(**kwargs)
     assert len(calls) == 2
     assert "当前为 3 个" in calls[-1][-1]["content"]
@@ -549,7 +601,7 @@ async def test_quantity_rule_errors_survive_semantic_reviewer_success_or_failure
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("has_semantic_quantity", [True, False])
-async def test_semantic_quantity_contract_requires_successful_semantic_review(monkeypatch, has_semantic_quantity) -> None:
+async def test_review_unavailability_does_not_invent_unrepairable_content_errors(monkeypatch, has_semantic_quantity) -> None:
     async def failed_review(*args, **kwargs):
         raise RuntimeError("reviewer unavailable")
 
@@ -562,16 +614,15 @@ async def test_semantic_quantity_contract_requires_successful_semantic_review(mo
         chapter_tasks=[task.model_dump(mode="json")],
     )
     assert report.fallback_used is True
-    assert report.passed is (not has_semantic_quantity)
-    if has_semantic_quantity:
-        assert report.issues[0]["issue_type"] == "quantity_review_unavailable"
-        assert actions[0].severity == "error"
-        merged = quality.build_merge_review_report(
-            enhanced_chapters=[_published_chapter()], expected_chapter_count=1, plan="", review_actions=actions,
-        )
-        assert merged.decision == "fail"
-    else:
-        assert actions == []
+    assert report.passed is True
+    assert actions == []
+    assert report.issues == []
+    assert report.glossary_warnings
+    merged = quality.build_merge_review_report(
+        enhanced_chapters=[_published_chapter()], expected_chapter_count=1, plan="", review_actions=actions,
+    )
+    assert merged.passed is True
+
 
 
 @pytest.mark.anyio
@@ -632,15 +683,8 @@ def test_final_structure_count_ignores_literal_markers_and_nested_headings() -> 
 @pytest.mark.anyio
 async def test_semantic_repair_receives_user_quantity_and_writing_boundaries(monkeypatch) -> None:
     prompts = []
-    verification_prompts = []
 
     async def fake_patch(messages, **kwargs):
-        if kwargs["response_model"] is repair._LocalPatchVerification:
-            verification_prompts.append(messages[-1]["content"])
-            return repair._LocalPatchVerification(
-                passed=True, verified_action_ids=["repair_action_001"],
-                verification_notes=["负索引从末尾定位，未增加例题或扩大主题。"],
-            )
         prompts.append(messages[-1]["content"])
         return kwargs["response_model"](
             status="patch", operation="replace_section", target_anchor="## 索引",
@@ -662,9 +706,6 @@ async def test_semantic_repair_receives_user_quantity_and_writing_boundaries(mon
     assert len(prompts) == 1
     assert "'worked_example_count': 2" in prompts[0]
     assert "不要扩展到列表排序" in prompts[0]
-    assert len(verification_prompts) == 1
-    assert "'worked_example_count': 2" in verification_prompts[0]
-    assert "不要扩展到列表排序" in verification_prompts[0]
     assert actions[0].status == "applied"
     assert unresolved == []
     assert "负索引从列表末尾向前定位" in repaired[0].markdown

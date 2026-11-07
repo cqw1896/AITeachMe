@@ -1,8 +1,14 @@
 # DocGen 链路
 
-最后更新：2026-08-15
+最后更新：2026-10-22
 
 职责：根据 `confirmed_plan` 生成正式知识文档。
+
+用户明确的数量合同与模式默认密度分开保存：`quantity_constraints` 和互不重叠的 `chapter_end_practice_plan.question_count` 是生成、复核、修补和发布的统一依据。明确题数不受默认覆盖计划长度限制，不能因题量较大而填空或回退默认题数。章末测试按每批最多 12 题生成并独立复核，题数同时进入输出 JSON Schema 的 `minItems`/`maxItems`，少题响应使用共享结构化校验反馈修复。当前批次的数量与全章背景合同分开传递，保持所有题组的数量、题型和用途，携带已验收题目避免跨批重复；合并后统一编号、核验总量与题型配额，只发布一个单元测试模块。按章 fan-out 必须传递真实 `total_chapters`，多章时不得把全课程文本中抽取到的单个题量套到当前章。
+
+进入 DocGen 表示用户已确认方案并开始正式构建。历史对话中的“先规划、暂不构建”是之前的操作阶段要求，不能变成永久禁止生成正文的内容合同；主题、章数、数量、资料和联网限制继续有效。
+
+超过单批规模的有效章末测试采用结构化逐题修补：模型只返回已有题号及该题内容，程序渲染被修改题并逐字保留其它题，不让模型为修几题重写整份题组。题目上下文按原始 Markdown 提供，避免 JSON 字符串的重复转义干扰数学公式与代码。内容修复从首次调用起使用推理模型，输出前完成复算，仅返回成立的最终讲解，不把试算或自我纠正草稿写入解析；修补后不再启动第二个模型复审。程序继续保证替换位置、完整题数、题型配额、分组顺序与题答协议。
 
 ```text
 输入: confirmed_plan + shared_inputs + profile + diagnose
@@ -169,7 +175,7 @@ user_profile.prompt_addendum
 
 输入：`reviewed_chapter_overlay_items`, `enhanced_chapter_drafts`, `guideline`, `dispatch_table`
 
-动作：先用规则检查章节数量、重复标题、骨架术语覆盖等跨章合同，再用一个局部 LLM 槽做一次整本结构化复核，只输出确有影响的问题和回流动作，不改写正文。增强阶段启动的 KG prefetch 同时继续按 section 并行运行，不在此重启。
+动作：先用规则检查章节数量、重复标题、骨架术语覆盖等跨章合同，再用一个局部 LLM 槽做一次整本结构化复核，只输出确有影响的问题和可立即执行的局部修复动作，不改写正文。跨章问题按受影响的小节拆开；观察项不能作为无法执行的 error 动作阻断发布。审核服务不可用时记录调用异常并保留规则结果，不将服务异常虚构为正文错误；已经发现的真实结构错误仍须修复。增强阶段启动的 KG prefetch 同时继续按 section 并行运行，不在此重启。
 
 输出：`reviewed_chapter_drafts`, `document_consistency_report`, `review_decision`, `review_actions`
 
@@ -177,7 +183,7 @@ user_profile.prompt_addendum
 
 输入：`reviewed_chapter_drafts`, `review_actions`, `document_consistency_report`
 
-动作：执行确定性的 Markdown 展示修复，对缺少/损坏的章末测试、正文显著低于字数合同，以及结构化复核明确标记的 `error` 执行有界局部修补，紧凑模式也不跳过正确性错误。正文纠错支持 `replace_section`，只能替换复核动作定位的现有小节，保留标题与题目数量，避免旧错解和新答案并存。测试修补依据显式目标标题或规则动作 ID 路由，不通过描述中是否提到“单元测试”判断；必须完整替换旧 `## 单元测试` 并再次通过同一协议校验。每章最多三轮 LLM 修补。其它语义内容不因关键词覆盖率触发补写。低 evidence binding 只保留证据分数和 warning。正文实际变化的 section 由最终 KG 同步按内容哈希补抽。
+动作：执行确定性的 Markdown 展示修复，对缺少/损坏的章末测试、正文显著低于字数合同，以及结构化复核明确标记的 `error` 执行局部修复，紧凑模式也不跳过正确性错误。有明确目标章的错误无论动作标签如何都进入实际修复，不能仅记录后留到发布节点失败。正文纠错支持原位 `replace_text` 和现有小节 `replace_section`，避免旧错解和新答案并存。测试修补依据显式目标标题或规则动作 ID 路由；有效大题组按题号替换，其余情况替换完整测试模块。修复器直接输出完成纠错的内容，程序只负责定位、结构、数量与渲染检查，不再调用模型复审或引入新的语义否决。无效输出或临时调用失败按具体反馈在同一目标内最多尝试三次，不丢弃其它目标已完成的修改。其它语义内容不因关键词覆盖率触发补写。低 evidence binding 只保留证据分数和 warning。正文实际变化的 section 由最终 KG 同步按内容哈希补抽。
 
 输出：`reviewed_chapter_drafts`, `repair_trace`, `unresolved_warnings`, `kg_refinement_items`, `kg_prefetch_status`
 

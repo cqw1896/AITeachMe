@@ -125,6 +125,11 @@ async def run_home_intake_turn(
     file_ids = list(dict.fromkeys(str(item).strip() for item in state.get("attached_file_ids", []) if str(item).strip()))
     session_id = str(state.get("session_id") or "").strip()
     user_id = str(state.get("user_id") or "local")
+    file_ids = _remember_attached_file_ids(
+        session_id=session_id,
+        user_id=user_id,
+        file_ids=file_ids,
+    )
     pending_action = _load_pending_action(
         session_id=session_id,
         user_id=user_id,
@@ -261,6 +266,9 @@ def _build_intent_messages(
                 "course_name，description，user_intent，planner_prompt，assistant_reply。"
                 "当且仅当用户明确表达创建/构建学科且目标足够清楚时 ready_to_create=true；"
                 "否则 assistant_reply 用自然中文追问或回答。"
+                "user_intent 和 planner_prompt 只保留学习目标、基础、章节、数量、资料与联网等持续约束；"
+                "‘先讨论’‘先规划’‘暂不构建’等操作顺序用于判断当前动作和 assistant_reply，"
+                "不要把它们写成后续正式文档永久只能停留在方案阶段的学习要求。"
             ) + _format_intent_tool_catalog(tool_catalog),
         },
         {
@@ -451,6 +459,34 @@ async def _emit_tool_event(
     result = handler(payload)
     if hasattr(result, "__await__"):
         await result
+
+
+def _remember_attached_file_ids(*, session_id: str, user_id: str, file_ids: list[str]) -> list[str]:
+    """Keep intake materials across clarification turns in the owned session."""
+
+    if not session_id:
+        return file_ids
+    with managed_session() as session:
+        record = get_chat_session(
+            session,
+            course_id=GLOBAL_COURSE,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        if record is None:
+            return file_ids
+        meta = dict(record.meta_json or {})
+        home_meta = dict(meta.get("home_intake") or {})
+        previous = home_meta.get("attached_file_ids")
+        previous = previous if isinstance(previous, list) else []
+        merged = list(dict.fromkeys([*previous, *file_ids]))
+        if merged != previous:
+            home_meta["attached_file_ids"] = merged
+            meta["home_intake"] = home_meta
+            record.meta_json = meta
+            session.add(record)
+            session.commit()
+        return merged
 
 
 def _load_pending_action(*, session_id: str, user_id: str) -> dict[str, Any] | None:

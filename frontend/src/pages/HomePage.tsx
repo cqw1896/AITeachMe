@@ -56,6 +56,8 @@ import {
 } from "../components/chat/ChatModelSelect";
 import type { FileRecord, FilesData, FilesUploadData } from "../types/files";
 import { CircularFileParseProgress } from "../components/files/FileParseProgress";
+import { ImageUnderstandingToggle, haveNoDocumentImages } from "../components/build-plan/ImageUnderstandingToggle";
+import { courseBuildPreferencesQueryKey, saveCourseImageUnderstanding } from "../hooks/useCourseBuildPreferences";
 
 /* ── API helpers (same as BuildPlanPage) ── */
 
@@ -687,6 +689,7 @@ export function HomePage() {
   const [uploadingFileNames, setUploadingFileNames] = useState<string[]>([]);
   const [entryFileIds, setEntryFileIds] = useState<string[]>([]);
   const [entryMode, setEntryMode] = useState<"course" | "chat">("course");
+  const [imageUnderstandingEnabled, setImageUnderstandingEnabled] = useState(false);
   const [chatModel, setChatModel] = useGlobalChatModelChoice();
   const [recentOpen, setRecentOpen] = useState(true);
   const [startersOpen, setStartersOpen] = useState(true);
@@ -711,6 +714,7 @@ export function HomePage() {
     setUploadingFileNames([]);
     setEntryFileIds([]);
     setEntryMode("course");
+    setImageUnderstandingEnabled(false);
     setLibraryPickerOpen(false);
     setError(null);
     navigate("/", { replace: true, state: null });
@@ -731,16 +735,17 @@ export function HomePage() {
   });
 
   // ── Courses query ──
-  const { data: courses = [] } = useQuery({
+  const demoCoursesQuery = useQuery({
     queryKey: ["available-demo-courses"],
     queryFn: fetchDemoCourses,
     retry: false,
     staleTime: 5 * 60 * 1000,
     gcTime: 30 * 60 * 1000,
-    refetchOnMount: false,
+    refetchOnMount: true,
     refetchOnWindowFocus: false,
     refetchOnReconnect: "always",
   });
+  const courses = demoCoursesQuery.data ?? [];
 
   const courseImportMutation = useMutation({
     mutationFn: ({ filename, newName }: { filename: string; newName?: string }) =>
@@ -958,8 +963,11 @@ export function HomePage() {
         void queryClient.invalidateQueries({ queryKey: ["files", courseId] });
       }
       const userGoal = prompt.trim() || "请基于我选择的资料，直接生成一份课程构建规划。";
+      const imageMode = imageUnderstandingEnabled && !haveNoDocumentImages(uploadedFiles);
+      const savedCourse = await saveCourseImageUnderstanding(courseId, imageMode);
+      queryClient.setQueryData(courseBuildPreferencesQueryKey(courseId), savedCourse);
       navigate(buildCoursePath(courseId, "build"), {
-        state: { initialPrompt: userGoal, autoStart: true, entrySource: "home_arrow", model: selectedModel },
+        state: { initialPrompt: userGoal, autoStart: true, entrySource: "home_arrow", model: selectedModel, imageUnderstandingEnabled: imageMode },
       });
     } catch (err: unknown) {
       setError(getApiErrorMessage(err, "开始课程规划失败，请重试"));
@@ -1053,7 +1061,7 @@ export function HomePage() {
   }, [entryFileIds, syncEntryFilesCache, uploadedFiles]);
 
   const isWorking = isCreatingDraftCourse || isStartingBuild || isUploadingFiles;
-  const shouldShowDemoCourseSection = courses.length > 0;
+  const shouldShowDemoCourseSection = courses.length > 0 || !demoCoursesQuery.isSuccess;
   const isCourseEntryMode = entryMode === "course";
   const activePromptStarters = isCourseEntryMode
     ? hasEntryFiles ? HOME_FILE_PROMPT_STARTERS : HOME_PROMPT_STARTERS
@@ -1284,6 +1292,14 @@ export function HomePage() {
                 </div>
               )}
 
+              {isCourseEntryMode && (
+                <ImageUnderstandingToggle
+                  checked={imageUnderstandingEnabled}
+                  onChange={setImageUnderstandingEnabled}
+                  disabled={isWorking}
+                  noImages={haveNoDocumentImages(uploadedFiles)}
+                />
+              )}
               <div className="flex flex-col gap-2 px-1 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex min-w-0 w-full flex-wrap items-center gap-1.5 sm:flex-1 sm:gap-2">
                   <input 
@@ -1471,7 +1487,7 @@ export function HomePage() {
               精选演示课程包
             </span>
             <span className="flex items-center gap-2 text-xs font-medium text-slate-400 transition-colors group-hover:text-slate-600 dark:text-slate-500 dark:group-hover:text-slate-300">
-              {courses.length} 个
+              {courses.length > 0 ? `${courses.length} 个` : demoCoursesQuery.isError || demoCoursesQuery.isPaused ? "暂时无法加载" : "加载中…"}
               <motion.div
                 animate={{ rotate: recentOpen ? 180 : 0 }}
                 transition={{ duration: 0.2, ease: "easeInOut" }}
@@ -1492,6 +1508,20 @@ export function HomePage() {
                 className="w-full overflow-hidden"
               >
                 <div className="pb-4 pt-2">
+                  {demoCoursesQuery.isError || demoCoursesQuery.isPaused ? (
+                    <div role="status" className="mb-4 flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:bg-slate-900 dark:text-slate-300">
+                      <span>演示课程暂时无法加载，请稍后重试。</span>
+                      <button type="button" onClick={() => void demoCoursesQuery.refetch()} disabled={demoCoursesQuery.isFetching} className="inline-flex shrink-0 items-center gap-1.5 text-indigo-600 hover:underline disabled:opacity-50 dark:text-indigo-400">
+                        <RefreshCw className={`h-4 w-4 ${demoCoursesQuery.isFetching ? "animate-spin" : ""}`} />
+                        重试加载课程
+                      </button>
+                    </div>
+                  ) : courses.length === 0 ? (
+                    <div role="status" className="flex items-center justify-center gap-2 py-5 text-sm text-slate-500">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      正在加载演示课程…
+                    </div>
+                  ) : null}
                   {demoCourseError ? (
                     <div className="mb-4 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-center text-sm font-medium text-red-600">
                       {demoCourseError}
